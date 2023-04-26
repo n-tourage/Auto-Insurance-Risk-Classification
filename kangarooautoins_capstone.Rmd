@@ -1,0 +1,340 @@
+---
+title: "Kangarooins"
+author: "Brendan Pham"
+date: "2023-03-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(caret)
+library(dplyr)
+library(tweedie)
+library(statmod)
+library(ggplot2)
+library(ggcorrplot)
+library(xgboost)
+library(gam)
+```
+
+```{r}
+SumModelGini <- function(solution, submission) {
+  df = data.frame(solution = solution, submission = submission)
+  df <- df[order(df$submission, decreasing = TRUE),]
+  df$random = (1:nrow(df))/nrow(df)
+  totalPos <- sum(df$solution)
+  df$cumPosFound <- cumsum(df$solution) # this will store the cumulative number of positive examples found (used for computing "Model Lorentz")
+  df$Lorentz <- df$cumPosFound / totalPos # this will store the cumulative proportion of positive examples found ("Model Lorentz")
+  df$Gini <- df$Lorentz - df$random # will store Lorentz minus random
+  return(sum(df$Gini))
+}
+
+NormalizedGini <- function(solution, submission) {
+  SumModelGini(solution, submission) / SumModelGini(solution, solution)
+}
+
+
+```
+
+```{r}
+setwd("C:/Users/brend/OneDrive/Documents")
+Kangaroo_train <- read_csv("Autoclaims_capstone/Kangaroo_train.csv")
+Kangaroo_valid <- read_csv("Autoclaims_capstone/Kangaroo_valid.csv")
+df <- read_csv("Autoclaims_capstone/Australian Data.csv")
+```
+
+```{r}
+Kangaroo_train$Frequency <- Kangaroo_train$claim_count/Kangaroo_train$exposure
+Kangaroo_train$Severity <- Kangaroo_train$claim_cost/Kangaroo_train$claim_count
+Kangaroo_train$PurePremium <- Kangaroo_train$Frequency*Kangaroo_train$Severity
+
+Kangaroo_valid$Frequency <- Kangaroo_valid$claim_count/Kangaroo_valid$exposure
+Kangaroo_valid$Severity <- Kangaroo_valid$claim_cost/Kangaroo_valid$claim_count
+Kangaroo_valid$PurePremium <- Kangaroo_valid$Frequency*Kangaroo_valid$Severity
+
+Kangaroo_valid$Severity <- replace(Kangaroo_valid$Severity,is.na(Kangaroo_valid$Severity),0)
+Kangaroo_valid$PurePremium <- replace(Kangaroo_valid$PurePremium,is.na(Kangaroo_valid$PurePremium),0)
+Kangaroo_train$Severity <- replace(Kangaroo_train$Severity,is.na(Kangaroo_train$Severity),0)
+Kangaroo_train$PurePremium <- replace(Kangaroo_train$PurePremium,is.na(Kangaroo_train$PurePremium),0)
+
+head(Kangaroo_train)
+```
+
+```{r}
+library(parallel)
+library(doParallel)
+
+ncores <-detectCores()-2
+cl <-makePSOCKcluster(ncores)
+registerDoParallel(cl)
+
+```
+
+```{r}
+
+
+
+dummy <- dummyVars(~.,data = Kangaroo_train)
+train_data <- predict(dummy, newdata = Kangaroo_train)
+
+train_data
+
+df$claimcst0 <- gsub("-",0,df$claimcst0)
+df$claimcst0 <- as.numeric(df$claimcst0)
+
+df$clm <- as.factor(df$clm)
+df$veh_body <- as.factor(df$veh_body)
+df$veh_age <- as.factor(df$veh_age)
+df$area <- as.factor(df$area)
+df$agecat <- as.factor(df$agecat)
+df$gender <- as.factor(df$gender)
+
+df <- df %>%
+  select(-starts_with("exposoure_10"))
+
+head(df)
+str(df)
+summary(df)
+df <- na.omit(df)
+
+```
+
+```{r}
+#Bar Graph of Gender effect on claims
+options(scipen = 999)
+
+ggplot(data = df, mapping = aes(x = gender, y = claimcst0, fill = gender)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_fill_brewer() +
+  labs(x = "Gender", y = "Claims", title = "Gender Claims Count")
+
+
+df %>%
+  ggplot() +
+  geom_bar(aes(x = reorder(veh_body,-claimcst0), y = claimcst0, fill = "blue"),stat ="identity") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Gender", y = "Claims", title = "Gender Claims Count") +
+  coord_flip()
+
+
+```
+
+```{r}
+ggplot(data = df, aes(x = numclaims,y = claimcst0, color = numclaims)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_fill_brewer() +
+  labs(x = "Gender", y = "Number of Claims", title = "Num of Claims to Claim Cost")
+```
+
+```{r}
+ggplot(data = df, aes(x = veh_age,y = claimcst0, color = "blue")) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_fill_brewer() +
+  labs(x = "Vehicle Age", y = "Claim Costs", title = "Vehicle Age to Claim Cost")
+```
+
+```{r}
+ggplot(data = df, aes(x = agecat,y = claimcst0, color = "blue")) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_fill_brewer() +
+  labs(x = "Age of Driver", y = "Claim Costs", title = "Age of Driver to Claim Cost")
+```
+
+```{r}
+ggplot(data = df, aes(x = area,y = claimcst0, color = "blue")) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_fill_brewer() +
+  labs(x = "Area", y = "Claim Costs", title = "Area to Claim Cost")
+```
+
+```{r}
+ggplot(data = df, aes(x= veh_value, y = claimcst0)) + geom_point()
+```
+
+```{r}
+ggplot(data = Kangaroo_train, aes(x = id,y = PurePremium)) + geom_point()
+```
+
+```{r}
+num.cols <- sapply(df, is.numeric)
+
+cor.data = cor(df[,num.cols])
+ggcorrplot(cor.data)
+
+```
+
+```{r}
+
+est_p <-tweedie.profile(claim_cost ~ veh_value + as.factor(gender) +
+                   as.factor(veh_age) + as.factor(dr_age),
+                   data=Kangaroo_train,link.power = 0,
+                   do.smooth = TRUE, do.plot = TRUE)
+
+#summary(tweedie_fit)
+```
+
+```{r}
+tweedie_fit <- glm(claim_count~ veh_value + as.factor(gender) +
+                   as.factor(veh_age) + as.factor(dr_age), 
+                   family = tweedie(var.power = 1.5, link.power = 0), 
+                   data = Kangaroo_train, offset = log(exposure), 
+                   weights = (exposure)^0.58)
+
+tweedie_predictions <- predict(tweedie_fit, Kangaroo_valid)
+
+postResample(tweedie_predictions,Kangaroo_valid$claim_cost)
+
+(tweed_gini = NormalizedGini(solution = Kangaroo_train$claim_count,submission = predict(tweedie_fit,type ="response")))
+```
+
+```{r}
+modelLookup("xgbLinear")
+
+xgb_grid = expand.grid(nrounds = c(1000,2000,3000,4000),eta = c(0.01,0.001,0.0001),lambda =1, alpha = 0)
+
+
+xgb_control = trainControl(method = "repeatedcv",repeats = 1, number = 5, returnData = FALSE,allowParallel = TRUE)
+```
+
+```{r}
+
+
+
+
+xgb_train = train(claim_cost ~ veh_value + factor(veh_body) + factor(gender)
+                   + factor(area) + factor(dr_age),data = Kangaroo_train, trControl = xgb_control,
+                  tuneGrid = xgb_grid, method = "xgbLinear",max.depth =5 )
+```
+
+```{r}
+ktrain = Kangaroo_train
+ktest = Kangaroo_valid
+
+ktrain = ktrain[,-c(1,3,9)]
+ktest = ktest[,-c(1,3,9)]
+
+ktrain$veh_body = as.numeric(as.factor(ktrain$veh_body))
+ktrain$veh_age = as.numeric(as.factor(ktrain$veh_age))
+ktrain$gender = as.numeric(as.factor(ktrain$gender))
+ktrain$area = as.numeric(as.factor(ktrain$area))
+
+ktest$veh_body = as.numeric(as.factor(ktest$veh_body))
+ktest$veh_age = as.numeric(as.factor(ktest$veh_age))
+ktest$gender = as.numeric(as.factor(ktest$gender))
+ktest$area = as.numeric(as.factor(ktest$area))
+
+
+
+train_x = as.matrix(ktrain[,-8])
+train_y = as.matrix(ktrain[,8])
+
+test_x = as.matrix(ktest[,-8])
+test_y = as.matrix(ktest[,8])
+
+xgb_train = xgb.DMatrix(data =train_x,label = train_y)
+
+
+xgb_train
+xgb_test = xgb.DMatrix(data =test_x,label = test_y)
+
+xgb_model <- xgboost(data = xgb_train,
+              nrounds = 1000, lambda = 1, alpha = 0, eta = 0.0001, verbose = 0)
+
+pred <- predict(xgb_model, xgb_test)
+
+postResample(pred,Kangaroo_valid$claim_cost)
+
+
+```
+
+```{r}
+importance_matrix <- xgb.importance(
+  feature_names = colnames(xgb_train), 
+  model = xgb_model
+)
+importance_matrix
+
+xgb.plot.importance(importance_matrix)
+```
+
+```{r}
+gamfit <- lm(claim_cost ~poly(veh_value, 2)+ poly(factor(veh_body), 2) + factor(gender) + factor(area) +bs(dr_age, knots = c(30,60)  ), data= Kangaroo_train)
+
+summary(gamfit)
+
+
+gams_predictions <- predict(gamfit , Kangaroo_valid)
+
+postResample(gams_predictions, Kangaroo_valid$claim_cost)
+
+(linear_gini = NormalizedGini(solution = Kangaroo_train$claim_cost,submission = predict(linear_model,type ="response")))
+```
+
+```{r}
+repeatedCV <- trainControl(method = "repeatedcv",number =5,repeats =5)
+
+rf_grid <-expand.grid(mtry = seq(from = 2, to = ncol(Kangaroo_train)-1,by = 1))
+
+rf_model <- train(PurePremium ~ veh_value + factor(veh_body) + factor(gender)
+                   + factor(area) + factor(dr_age), data = Kangaroo_train, method = "rf",
+                  trControl = repeatedCV, importance = TRUE, tuneGrid = rf_grid)
+```
+
+```{r}
+linear_model <- lm(claim_cost ~ veh_value + factor(veh_body) + factor(gender)
+                   + factor(area) + factor(dr_age), data = Kangaroo_train)
+
+summary(linear_model)
+
+linear_predictions <- predict(linear_model , Kangaroo_valid)
+
+postResample(linear_predictions, Kangaroo_valid$claim_cost)
+
+(linear_gini = NormalizedGini(solution = Kangaroo_train$claim_cost,submission = predict(linear_model,type ="response")))
+
+```
+
+```{r}
+gam_model <- gam(claim_ind ~ s(veh_value)+as.factor(dr_age) + as.factor(gender)+as.factor(area),family = poisson(link = "log"),offset = log(exposure),data =Kangaroo_train)
+
+summary(gam_model)
+
+gam_predictions <- predict(gam_model , Kangaroo_valid)
+
+postResample(gam_predictions, Kangaroo_valid$Severity)
+
+(gam_gini = NormalizedGini(solution = Kangaroo_train$claim_ind,submission = predict(gam_model,type ="response")))
+```
+
+```{r}
+gam_model <- glm(claim_ind ~ veh_value+as.factor(dr_age) + as.factor(gender)+as.factor(area),family = binomial,data =Kangaroo_train)
+
+summary(gam_model)
+
+gam_predictions <- predict(gam_model , Kangaroo_valid)
+
+postResample(gam_predictions, Kangaroo_valid$Severity)
+
+(gam_gini = NormalizedGini(solution = Kangaroo_train$claim_ind,submission = predict(gam_model,type ="response")))
+```
+
+```{r}
+
+```
